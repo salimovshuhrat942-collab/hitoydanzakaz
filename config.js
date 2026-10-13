@@ -2,7 +2,8 @@ require('dotenv').config();
 const crypto = require('crypto');
 
 const BOT_TOKEN = process.env.BOT_TOKEN || '';
-const BASE_URL = (process.env.BASE_URL || process.env.RENDER_EXTERNAL_URL || '').replace(/\/$/, '');
+const railwayUrl = process.env.RAILWAY_PUBLIC_DOMAIN ? 'https://' + process.env.RAILWAY_PUBLIC_DOMAIN : '';
+const BASE_URL = (process.env.BASE_URL || process.env.RENDER_EXTERNAL_URL || railwayUrl || '').replace(/\/$/, '');
 
 // Webhook yo'li tokendan hosil qilinadi (boshqalar topa olmasligi uchun)
 const WEBHOOK_PATH =
