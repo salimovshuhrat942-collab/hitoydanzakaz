@@ -5,6 +5,8 @@ const promoSvc = require('./promo');
 
 const bot = new Telegraf(process.env.BOT_TOKEN);
 
+const botState = { id: 0 };
+
 bot.use(async (ctx, next) => {
   if (ctx.from) {
     await M.User.updateOne(
@@ -87,10 +89,10 @@ bot.command('addpromo', async (ctx) => {
 
 module.exports = {
   bot,
-  state: { id: 0 },
+  state: botState,
   async initBot() {
     const me = await bot.telegram.getMe();
-    this.state.id = me.id;
+    botState.id = me.id;
     console.log(`Bot: @${me.username}`);
   },
   esc(s) {
