@@ -3,6 +3,7 @@ const mongoose = require('mongoose');
 const { BOT_TOKEN, ADMIN_ID, BASE_URL, REGIONS } = require('./config');
 const { User, Product, Order, Image, Seller, toBuf } = require('./models');
 const promoSvc = require('./promo');
+const { PromoCode } = require('./models'); // Promo-kodlar modeli qo'shildi
 
 const bot = new Telegraf(BOT_TOKEN);
 const state = { id: 0, username: '' };
@@ -115,7 +116,6 @@ async function notifySeller(order) {
     }
   } catch (e) {
     console.error('Sotuvchiga yuborib bo\'lmadi:', e.message);
-    // Zaxira: adminga yuboramiz
     try {
       await bot.telegram.sendMessage(
         ADMIN_ID,
@@ -130,7 +130,6 @@ async function notifySeller(order) {
 
 // Web App va Bot uchun umumiy buyurtma yaratish
 async function createOrder({ product, buyer, name, phone, region, district, qty, note, receipt, source, promo }) {
-  // Promo kod (bo'lsa) — chegirmani server o'zi hisoblaydi
   let promoCode = '';
   let discount = 0;
   if (promo) {
@@ -141,25 +140,25 @@ async function createOrder({ product, buyer, name, phone, region, district, qty,
   let order;
   try {
     order = await Order.create({
-    product: product._id,
-    productTitle: product.title,
-    productImage: product.image,
-    price: product.price,
-    qty,
-    seller: product.seller,
-    buyer: buyer.id,
-    buyerName: buyer.name,
-    buyerUsername: buyer.username || '',
-    name,
-    phone,
-    region,
-    district,
-    note: note || '',
-    promo: promoCode,
-    discount,
-    receipt: receipt || undefined,
-    source,
-  });
+      product: product._id,
+      productTitle: product.title,
+      productImage: product.image,
+      price: product.price,
+      qty,
+      seller: product.seller,
+      buyer: buyer.id,
+      buyerName: buyer.name,
+      buyerUsername: buyer.username || '',
+      name,
+      phone,
+      region,
+      district,
+      note: note || '',
+      promo: promoCode,
+      discount,
+      receipt: receipt || undefined,
+      source,
+    });
   } catch (e) {
     if (promoCode) await promoSvc.release(promoCode, buyer.id);
     throw e;
@@ -247,7 +246,6 @@ function askQty(ctx) {
   );
 }
 
-// Soni tanlangach — promo kod so'raymiz
 function askPromo(ctx, flow) {
   flow.step = 'promo';
   return ctx.reply(
@@ -303,6 +301,62 @@ async function showConfirm(ctx, flow) {
     ]),
   });
 }
+
+// ---------- ADMIN: PROMO-KOD QO'SHISH BUYRUG'I ----------
+bot.command('addpromo', async (ctx) => {
+  try {
+    // ADMIN_ID ni config'dan oladi yoki o'zingizning Telegram ID'ingizni yozishingiz mumkin
+    if (String(ctx.from.id) !== String(ADMIN_ID)) {
+      return ctx.reply('Sizda bu buyruqni ishlatish huquqi yo‘q.');
+    }
+
+    const args = ctx.message.text.split(' ').slice(1);
+    if (args.length < 4) {
+      return ctx.reply(
+        '⚠️ Xato format!\n\n' +
+        'To‘g‘ri ishlatish:\n' +
+        '`/addpromo KOD` `fixed` yoki `percent` `qiymat` `limit`\n\n' +
+        'Misol: `/addpromo NAVRUZ fixed 15000 100` (15 ming so‘m, 100 ta limit)\n' +
+        'Misol 2: `/addpromo SALE percent 10 50` (10%, 50 ta limit)'
+      );
+    }
+
+    const [rawCode, type, valueStr, maxUsesStr] = args;
+    const code = promoSvc.normCode(rawCode);
+    const value = Number(valueStr);
+    const maxUses = Number(maxUsesStr);
+
+    if (!['fixed', 'percent'].includes(type)) {
+      return ctx.reply('❌ Turi faqat "fixed" (pul miqdori) yoki "percent" (foiz) bo‘lishi kerak!');
+    }
+
+    if (isNaN(value) || isNaN(maxUses)) {
+      return ctx.reply('❌ Qiymat va limit raqam bo‘lishi kerak!');
+    }
+
+    const existing = await PromoCode.findOne({ code });
+    if (existing) {
+      return ctx.reply(`❌ "${code}" nomli promo-kod allaqachon mavjud!`);
+    }
+
+    await PromoCode.create({
+      code,
+      type,
+      value,
+      active: true,
+      maxUses,
+      used: 0,
+      usedBy: [],
+    });
+
+    return ctx.reply(`✅ Muvaffaqiyatli qo'shildi!\n\n🏷 Kod: *${code}*\n💰 Qiymat: *${value}* (${type})\n🔢 Limit: *${maxUses} ta*`, { parse_mode: 'Markdown' });
+
+  } catch (err) {
+    console.error('Promo qo‘shish xatosi:', err);
+    ctx.reply('❌ Promo-kodni qo‘shishda xatolik yuz berdi.');
+  }
+});
+// --------------------------------------------------------
 
 // ---------- handlerlar ----------
 bot.use(async (ctx, next) => {
