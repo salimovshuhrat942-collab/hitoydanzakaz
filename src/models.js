@@ -79,6 +79,8 @@ const Order = mongoose.model(
     region: String,
     district: String,
     note: String,
+    promo: String, // ishlatilgan promo kod
+    discount: { type: Number, default: 0 }, // chegirma summasi (so'm)
     status: { type: String, default: 'new' }, // new | accepted | rejected | done
     source: { type: String, default: 'webapp' }, // webapp | bot
     receipt: { type: Schema.Types.ObjectId, ref: 'Image' }, // to'lov cheki rasmi
@@ -98,7 +100,23 @@ const Ad = mongoose.model(
   })
 );
 
+const PromoCode = mongoose.model(
+  'PromoCode',
+  new Schema({
+    code: { type: String, unique: true, index: true }, // katta harflarda
+    type: { type: String, default: 'percent' }, // percent | fixed
+    value: Number, // foiz (1-100) yoki so'm
+    maxUses: { type: Number, default: 0 }, // 0 = cheksiz
+    used: { type: Number, default: 0 },
+    oncePerUser: { type: Boolean, default: true },
+    usedBy: { type: [Number], default: [] },
+    expiresAt: Date, // bo'sh = muddatsiz
+    active: { type: Boolean, default: true },
+    createdAt: { type: Date, default: Date.now },
+  })
+);
+
 // lean() so'rovlarda Buffer maydon Binary bo'lib keladi — oddiy Buffer'ga aylantiramiz
 const toBuf = (d) => (Buffer.isBuffer(d) ? d : Buffer.from(d.buffer));
 
-module.exports = { User, Seller, Category, Image, Product, Order, Ad, toBuf };
+module.exports = { User, Seller, Category, Image, Product, Order, Ad, PromoCode, toBuf };
