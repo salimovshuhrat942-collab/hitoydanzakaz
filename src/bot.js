@@ -88,7 +88,7 @@ bot.command('addpromo', async (ctx) => {
 module.exports = {
   bot,
   state: { id: 0 },
-  async init() {
+  async initBot() {
     const me = await bot.telegram.getMe();
     this.state.id = me.id;
     console.log(`Bot: @${me.username}`);
