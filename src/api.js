@@ -4,6 +4,7 @@ const { ADMIN_ID, REGIONS } = require('./config');
 const M = require('./models');
 const { auth, requireStaff, requireAdmin, httpErr, verifyInitData } = require('./auth');
 const botmod = require('./bot');
+const promoSvc = require('./promo');
 
 const router = express.Router();
 const wrap = (fn) => (req, res, next) => fn(req, res, next).catch(next);
@@ -121,6 +122,25 @@ router.get(
   })
 );
 
+// ---------- Promo kodni tekshirish ----------
+router.post(
+  '/api/promo/check',
+  wrap(async (req, res) => {
+    const b = req.body || {};
+    if (!isId(b.productId)) throw httpErr(400, "Mahsulot noto'g'ri");
+    const product = await M.Product.findById(b.productId).lean();
+    if (!product || !product.active) throw httpErr(404, 'Mahsulot topilmadi');
+    const qty = Math.min(99, Math.max(1, parseInt(b.qty, 10) || 1));
+    try {
+      const r = await promoSvc.check(b.code, req.tg.id, product.price * qty);
+      res.json({ ok: true, code: r.code, type: r.type, value: r.value, discount: r.discount });
+    } catch (e) {
+      if (e instanceof promoSvc.PromoError) throw httpErr(400, e.message);
+      throw e;
+    }
+  })
+);
+
 // ---------- Buyurtma berish (Web App) ----------
 router.post(
   '/api/orders',
@@ -145,6 +165,15 @@ router.post(
 
     const phone = digits.length === 9 ? '+998' + digits : '+' + digits;
 
+    if (b.promo) {
+      try {
+        await promoSvc.check(b.promo, req.tg.id, product.price * qty);
+      } catch (e) {
+        if (e instanceof promoSvc.PromoError) throw httpErr(400, e.message);
+        throw e;
+      }
+    }
+
     const sellerDoc = await M.Seller.findOne({ tgId: product.seller }).lean();
     let receipt;
     if (sellerDoc && sellerDoc.cardNumber) {
@@ -152,18 +181,25 @@ router.post(
       receipt = await saveImage(b.receipt, true);
     }
 
-    const order = await botmod.createOrder({
-      product,
-      buyer: req.tg,
-      name,
-      phone,
-      region,
-      district,
-      qty,
-      note,
-      receipt,
-      source: 'webapp',
-    });
+    let order;
+    try {
+      order = await botmod.createOrder({
+        product,
+        buyer: req.tg,
+        name,
+        phone,
+        region,
+        district,
+        qty,
+        note,
+        receipt,
+        promo: b.promo,
+        source: 'webapp',
+      });
+    } catch (e) {
+      if (e instanceof promoSvc.PromoError) throw httpErr(400, e.message);
+      throw e;
+    }
     res.json({ ok: true, id: order._id });
   })
 );
@@ -179,6 +215,7 @@ router.get(
         image: o.productImage ? `/img/${o.productImage}` : null,
         price: o.price,
         qty: o.qty,
+        discount: o.discount || 0,
         status: o.status,
         createdAt: o.createdAt,
       }))
@@ -295,6 +332,8 @@ router.get(
         title: o.productTitle,
         price: o.price,
         qty: o.qty,
+        discount: o.discount || 0,
+        promo: o.promo || '',
         status: o.status,
         name: o.name,
         phone: o.phone,
@@ -560,6 +599,92 @@ router.delete(
   wrap(async (req, res) => {
     if (!isId(req.params.id)) throw httpErr(404, 'Topilmadi');
     await M.Category.deleteOne({ _id: req.params.id });
+    res.json({ ok: true });
+  })
+);
+
+// Promo kodlar
+const pubPromo = (p) => ({
+  id: p._id,
+  code: p.code,
+  type: p.type,
+  value: p.value,
+  maxUses: p.maxUses,
+  used: p.used,
+  oncePerUser: p.oncePerUser,
+  expiresAt: p.expiresAt || null,
+  active: p.active,
+  expired: Boolean(p.expiresAt && p.expiresAt.getTime() < Date.now()),
+});
+
+router.get(
+  '/api/admin/promos',
+  requireAdmin,
+  wrap(async (req, res) => {
+    const list = await M.PromoCode.find().sort({ createdAt: -1 }).limit(200).lean();
+    res.json(list.map(pubPromo));
+  })
+);
+
+router.post(
+  '/api/admin/promos',
+  requireAdmin,
+  wrap(async (req, res) => {
+    const b = req.body || {};
+    const code = promoSvc.normCode(b.code);
+    if (!promoSvc.validFormat(code)) {
+      throw httpErr(400, "Kod 3-20 belgidan iborat bo'lsin (lotin harflari, raqam, - yoki _)");
+    }
+    const type = b.type === 'fixed' ? 'fixed' : 'percent';
+    const value = Math.round(Number(b.value));
+    if (!value || value < 1) throw httpErr(400, 'Chegirma qiymatini kiriting');
+    if (type === 'percent' && value > 100) throw httpErr(400, "Foiz 1 dan 100 gacha bo'lsin");
+    if (type === 'fixed' && value > 1e9) throw httpErr(400, "Summa noto'g'ri");
+    const maxUses = Math.max(0, Math.min(1e6, parseInt(b.maxUses, 10) || 0));
+
+    let expiresAt;
+    if (b.expires) {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(String(b.expires))) throw httpErr(400, "Sana noto'g'ri");
+      expiresAt = new Date(b.expires + 'T23:59:59+05:00'); // Toshkent vaqti
+      if (isNaN(expiresAt) || expiresAt.getTime() < Date.now()) throw httpErr(400, "Muddat o'tib ketgan sana");
+    }
+
+    try {
+      await M.PromoCode.create({
+        code,
+        type,
+        value,
+        maxUses,
+        oncePerUser: b.oncePerUser !== false,
+        expiresAt,
+      });
+    } catch (e) {
+      if (e && e.code === 11000) throw httpErr(400, 'Bu kod allaqachon mavjud');
+      throw e;
+    }
+    res.json({ ok: true, code });
+  })
+);
+
+router.post(
+  '/api/admin/promos/:id/toggle',
+  requireAdmin,
+  wrap(async (req, res) => {
+    if (!isId(req.params.id)) throw httpErr(404, 'Topilmadi');
+    const p = await M.PromoCode.findById(req.params.id);
+    if (!p) throw httpErr(404, 'Topilmadi');
+    p.active = !p.active;
+    await p.save();
+    res.json({ ok: true, active: p.active });
+  })
+);
+
+router.delete(
+  '/api/admin/promos/:id',
+  requireAdmin,
+  wrap(async (req, res) => {
+    if (!isId(req.params.id)) throw httpErr(404, 'Topilmadi');
+    await M.PromoCode.deleteOne({ _id: req.params.id });
     res.json({ ok: true });
   })
 );
