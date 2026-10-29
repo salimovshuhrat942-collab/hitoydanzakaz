@@ -31,7 +31,7 @@ bot.start(async (ctx) => {
   );
 });
 
-// Sotuvchi yoki Admin uchun promo-kod qo'shish buyrug'i: /addpromo KOD PERCENT FOIZ LIMIT
+// Promo-kod qo'shish buyrug'i: /addpromo KOD percent FOIZ LIMIT
 bot.command('addpromo', async (ctx) => {
   const userId = ctx.from.id;
   const isAdmin = String(userId) === String(ADMIN_ID);
@@ -84,6 +84,35 @@ bot.command('addpromo', async (ctx) => {
       return ctx.reply("⚠️ Bu promo-kod allaqachon mavjud!");
     }
     return ctx.reply("⚠️ Xatolik yuz berdi: " + e.message);
+  }
+});
+
+// Buyurtmani tasdiqlash yoki rad etish tugmalari uchun handler
+bot.action(/^(accept|reject)_(.+)$/, async (ctx) => {
+  const action = ctx.match[1];
+  const orderId = ctx.match[2];
+  try {
+    const order = await M.Order.findById(orderId);
+    if (!order) return ctx.answerCbQuery('Buyurtma topilmadi!');
+
+    if (String(order.seller) !== String(ctx.from.id) && String(ctx.from.id) !== String(ADMIN_ID)) {
+      return ctx.answerCbQuery("Huquqingiz yo'q!");
+    }
+
+    order.status = action === 'accept' ? 'accepted' : 'rejected';
+    await order.save();
+
+    const txt = ctx.callback.message.text || ctx.callback.message.caption || '';
+    const statusText = action === 'accept' ? '\n\n<b>✅ Holati: Qabul qilindi</b>' : '\n\n<b>❌ Holati: Rad etildi</b>';
+    
+    if (ctx.callback.message.photo) {
+      await ctx.editMessageCaption(txt + statusText, { parse_mode: 'HTML', reply_markup: { inline_keyboard: [] } }).catch(() => {});
+    } else {
+      await ctx.editMessageText(txt + statusText, { parse_mode: 'HTML', reply_markup: { inline_keyboard: [] } }).catch(() => {});
+    }
+    await ctx.answerCbQuery(action === 'accept' ? 'Buyurtma qabul qilindi' : 'Buyurtma rad etildi');
+  } catch (e) {
+    await ctx.answerCbQuery('Xatolik yuz berdi');
   }
 });
 
@@ -153,7 +182,15 @@ module.exports = {
         `📍 <b>Manzil:</b> ${this.esc(data.region)}, ${this.esc(data.district)}\n` +
         (data.note ? `💬 <b>Izoh:</b> ${this.esc(data.note)}\n` : '');
 
-      bot.telegram.sendMessage(sellerDoc.tgId, tmsg, { parse_mode: 'HTML' }).catch(() => {});
+      bot.telegram.sendMessage(sellerDoc.tgId, tmsg, {
+        parse_mode: 'HTML',
+        ...Markup.inlineKeyboard([
+          [
+            Markup.button.callback('✅ Qabul qilish', `accept_${order._id}`),
+            Markup.button.callback('❌ Rad etish', `reject_${order._id}`)
+          ]
+        ])
+      }).catch(() => {});
     }
     return order;
   }
