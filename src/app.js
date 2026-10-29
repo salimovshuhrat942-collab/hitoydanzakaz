@@ -48,6 +48,7 @@ function haptic(type = 'light') {
 let toastTimer;
 function toast(msg, isErr) {
   const t = $('#toast');
+  if (!t) return alert(msg);
   t.textContent = msg;
   t.className = 'show' + (isErr ? ' err' : '');
   clearTimeout(toastTimer);
@@ -109,14 +110,16 @@ const pickHtml = (label) =>
 function imgPicker(root, max, q) {
   const st = { data: null };
   const inp = $('input', root), pv = $('img', root), lb = $('span', root);
-  inp.onchange = async () => {
-    const f = inp.files[0];
-    if (!f) return;
-    try {
-      st.data = await compress(f, max, q);
-      pv.src = st.data; pv.style.display = 'block'; lb.style.display = 'none';
-    } catch (e) { toast("Rasmni o'qib bo'lmadi", true); }
-  };
+  if (inp) {
+    inp.onchange = async () => {
+      const f = inp.files[0];
+      if (!f) return;
+      try {
+        st.data = await compress(f, max, q);
+        pv.src = st.data; pv.style.display = 'block'; lb.style.display = 'none';
+      } catch (e) { toast("Rasmni o'qib bo'lmadi", true); }
+    };
+  }
   return st;
 }
 
@@ -168,7 +171,7 @@ function render() {
   return renderPanel();
 }
 
-/* =====================  BOSH SAHIFA  ===================== */
+/* ===================== BOSH SAHIFA ===================== */
 function adsHtml() {
   if (!S.ads.length) {
     return `<div class="ads single"><div class="ad ph"><div class="tx"><b>📢 Reklama joyi</b><span>Reklama joylash uchun admin bilan bog'laning</span></div></div></div>`;
@@ -316,9 +319,9 @@ function openOrder(p) {
   const rc = p.pay ? imgPicker($('#rcw'), 1200, 0.85) : { data: null };
   if (p.pay) {
     $('#cp').onclick = () =>
-      copyText(p.pay.card).then(() => { toast('📋 Karta raqami nusxalandi'); haptic(); }, () => toast("Nusxalab bo'lmadi, raqamni qo'lda belgilang", true));
+      copyText(p.pay.card).then(() => { toast('📋 Karta raqami nusxalandi'); haptic(); }, () => toast("Nusxalab bo'mladi, raqamni qo'lda belgilang", true));
   }
-  let promo = null; // { code, type, value }
+  let promo = null;
   const upd = () => {
     $('#qv').textContent = qty;
     const sub = p.price * qty;
@@ -388,7 +391,7 @@ function openOrder(p) {
   };
 }
 
-/* =====================  BUYURTMALARIM  ===================== */
+/* ===================== BUYURTMALARIM ===================== */
 async function renderOrders() {
   $('#view').innerHTML = `<h2 class="sec">📦 Buyurtmalarim</h2><div class="list" id="ol"><div class="sk" style="height:76px"></div></div>`;
   try {
@@ -409,7 +412,7 @@ async function renderOrders() {
   } catch (e) { $('#ol').innerHTML = `<div class="empty"><b>⚠️</b>${esc(e.message)}</div>`; }
 }
 
-/* =====================  PANEL (sotuvchi / admin)  ===================== */
+/* ===================== PANEL (sotuvchi / admin) ===================== */
 const PT = {
   seller: [['stats', '📊 Statistika'], ['add', "➕ Mahsulot qo'shish"], ['mine', '📦 Mahsulotlarim'], ['sorders', '🧾 Buyurtmalar'], ['settings', '💳 Karta']],
   admin: [['astats', '📈 Umumiy'], ['sellers', '🏪 Sotuvchilar'], ['ads', '📢 Reklama'], ['promos', '🎟 Promo kod'], ['cats', "🗂 Bo'limlar"], ['add', '➕ Mahsulot'], ['mine', '📦 Mahsulotlar'], ['sorders', '🧾 Buyurtmalar'], ['settings', '💳 Karta']],
