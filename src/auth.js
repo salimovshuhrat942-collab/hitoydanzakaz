@@ -73,4 +73,4 @@ const requireStaff = (req, res, next) =>
 const requireAdmin = (req, res, next) =>
   req.role === 'admin' ? next() : next(httpErr(403, "Ruxsat yo'q"));
 
-module.exports = { auth, requireStaff, requireAdmin, httpErr, HttpError };
+module.exports = { auth, requireStaff, requireAdmin, httpErr, HttpError, verifyInitData };
