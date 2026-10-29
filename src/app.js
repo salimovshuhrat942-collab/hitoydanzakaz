@@ -34,6 +34,12 @@ function copyText(t) {
     a.remove();
   });
 }
+const calcDisc = (pr, sub) => {
+  if (!pr) return 0;
+  const d = pr.type === 'fixed' ? pr.value : Math.floor((sub * pr.value) / 100);
+  return Math.max(0, Math.min(d, sub));
+};
+const promoLabel = (pr) => (pr.type === 'fixed' ? `−${money(pr.value)}` : `−${pr.value}%`);
 const STATUS = { new: '🆕 Yangi', accepted: '✅ Qabul qilindi', rejected: '❌ Rad etildi', done: '🏁 Yakunlandi' };
 
 function haptic(type = 'light') {
@@ -298,6 +304,11 @@ function openOrder(p) {
         <div class="pb-s">Jami summani shu kartaga o'tkazing, so'ng to'lov chekining rasmini (skrinshot) yuklang.</div>
       </div>
       <div class="fld" id="rcw">${pickHtml('Chek rasmini yuklang')}</div>` : ''}
+    <div class="fld"><label>🎟 Promo kod (ixtiyoriy)</label>
+      <div class="promo-row"><input id="o-promo" maxlength="20" placeholder="PROMO10" autocapitalize="characters" autocomplete="off">
+      <button class="btn light sm" id="o-pa" type="button">Qo'llash</button></div>
+      <div class="promo-msg" id="o-pm"></div></div>
+    <div class="total" id="dsr" style="display:none"><span>🎟 Chegirma:</span><b class="ds" id="dsv"></b></div>
     <div class="total"><span>Jami:</span><b id="tot">${money(p.price)}</b></div>
     <button class="btn" id="send">✅ Buyurtmani yuborish</button>
   </div>`);
@@ -307,7 +318,35 @@ function openOrder(p) {
     $('#cp').onclick = () =>
       copyText(p.pay.card).then(() => { toast('📋 Karta raqami nusxalandi'); haptic(); }, () => toast("Nusxalab bo'lmadi, raqamni qo'lda belgilang", true));
   }
-  const upd = () => { $('#qv').textContent = qty; $('#tot').textContent = money(p.price * qty); };
+  let promo = null; // { code, type, value }
+  const upd = () => {
+    $('#qv').textContent = qty;
+    const sub = p.price * qty;
+    const ds = calcDisc(promo, sub);
+    $('#dsr').style.display = ds ? 'flex' : 'none';
+    $('#dsv').textContent = '−' + money(ds);
+    $('#tot').textContent = money(sub - ds);
+  };
+  const pm = $('#o-pm'), pin = $('#o-promo'), pa = $('#o-pa');
+  const resetPromo = () => { promo = null; pm.textContent = ''; pm.className = 'promo-msg'; pin.disabled = false; pa.textContent = "Qo'llash"; upd(); };
+  pin.addEventListener('input', () => { pin.value = pin.value.toUpperCase().replace(/[^A-Z0-9_-]/g, ''); });
+  pa.onclick = async () => {
+    if (promo) { pin.value = ''; return resetPromo(); }
+    const code = pin.value.trim();
+    if (!code) return toast('Promo kodni kiriting', true);
+    pa.disabled = true;
+    try {
+      const r = await api('/promo/check', { method: 'POST', body: { code, productId: p.id, qty } });
+      promo = { code: r.code, type: r.type, value: r.value };
+      pm.textContent = '✅ Promo qo\'llandi: ' + promoLabel(promo);
+      pm.className = 'promo-msg ok';
+      pin.disabled = true; pa.textContent = 'Bekor qilish';
+      haptic('medium'); upd();
+    } catch (e) {
+      pm.textContent = '❌ ' + e.message; pm.className = 'promo-msg bad';
+    }
+    pa.disabled = false;
+  };
   $('#m').onclick = () => { if (qty > 1) { qty--; upd(); haptic(); } };
   $('#pl').onclick = () => { if (qty < 99) { qty++; upd(); haptic(); } };
 
@@ -320,6 +359,7 @@ function openOrder(p) {
       district: $('#o-dis').value.trim(),
       note: $('#o-note').value.trim(),
       qty,
+      promo: promo ? promo.code : '',
       receipt: rc.data,
     };
     const digits = d.phone.replace(/\D/g, '');
@@ -361,7 +401,7 @@ async function renderOrders() {
         (o, i) => `<div class="li" style="animation-delay:${i * 40}ms">
         ${o.image ? `<img class="th" src="${o.image}" alt="">` : '<div class="th"></div>'}
         <div class="in"><b>${esc(o.title)}</b>
-        <span class="p">${money(o.price * o.qty)}</span>
+        <span class="p">${money(o.price * o.qty - (o.discount || 0))}</span>
         <small>${o.qty} dona · ${fdate(o.createdAt)}</small></div>
         <span class="badge ${o.status}">${STATUS[o.status] || o.status}</span></div>`
       )
@@ -372,7 +412,7 @@ async function renderOrders() {
 /* =====================  PANEL (sotuvchi / admin)  ===================== */
 const PT = {
   seller: [['stats', '📊 Statistika'], ['add', "➕ Mahsulot qo'shish"], ['mine', '📦 Mahsulotlarim'], ['sorders', '🧾 Buyurtmalar'], ['settings', '💳 Karta']],
-  admin: [['astats', '📈 Umumiy'], ['sellers', '🏪 Sotuvchilar'], ['ads', '📢 Reklama'], ['cats', "🗂 Bo'limlar"], ['add', '➕ Mahsulot'], ['mine', '📦 Mahsulotlar'], ['sorders', '🧾 Buyurtmalar'], ['settings', '💳 Karta']],
+  admin: [['astats', '📈 Umumiy'], ['sellers', '🏪 Sotuvchilar'], ['ads', '📢 Reklama'], ['promos', '🎟 Promo kod'], ['cats', "🗂 Bo'limlar"], ['add', '➕ Mahsulot'], ['mine', '📦 Mahsulotlar'], ['sorders', '🧾 Buyurtmalar'], ['settings', '💳 Karta']],
 };
 
 function renderPanel() {
@@ -393,7 +433,7 @@ function renderPanel() {
   panelView();
 }
 function panelView() {
-  const v = { stats: viewStats, astats: viewAdminStats, add: viewAdd, mine: viewMine, sorders: viewStaffOrders, sellers: viewSellers, ads: viewAds, cats: viewCats, settings: viewSettings }[S.ptab];
+  const v = { stats: viewStats, astats: viewAdminStats, add: viewAdd, mine: viewMine, sorders: viewStaffOrders, sellers: viewSellers, ads: viewAds, promos: viewPromos, cats: viewCats, settings: viewSettings }[S.ptab];
   $('#pv').innerHTML = '<div class="sk" style="height:120px"></div>';
   v().catch((e) => { const pv = $('#pv'); if (pv) pv.innerHTML = `<div class="empty"><b>⚠️</b>${esc(e.message)}</div>`; });
 }
@@ -494,7 +534,8 @@ async function viewStaffOrders() {
     .map(
       (o, i) => `<div class="li col" style="animation-delay:${Math.min(i, 10) * 35}ms">
       <div style="display:flex;justify-content:space-between;gap:8px;align-items:center"><b>${esc(o.title)}</b><span class="badge ${o.status}">${STATUS[o.status] || o.status}</span></div>
-      <div class="in" style="margin-top:6px"><span class="p">${money(o.price * o.qty)}</span> <small style="display:inline">· ${o.qty} dona · ${fdate(o.createdAt)}</small>
+      <div class="in" style="margin-top:6px"><span class="p">${money(o.price * o.qty - (o.discount || 0))}</span> <small style="display:inline">· ${o.qty} dona · ${fdate(o.createdAt)}</small>
+      ${o.discount ? `<small>🎟 ${esc(o.promo)}: −${money(o.discount)}</small>` : ''}
       <small>👤 ${esc(o.name)} · <a href="tel:${esc(o.phone)}">${esc(o.phone)}</a></small>
       <small>📍 ${esc(o.region)}, ${esc(o.district)}</small>${o.note ? `<small>📝 ${esc(o.note)}</small>` : ''}
       ${o.receipt ? `<small>🧾 <a href="#" data-r="${o.receipt}">To'lov chekini ko'rish</a></small>` : ''}</div></div>`
@@ -604,6 +645,78 @@ async function viewAds() {
       const a = await api('/bootstrap'); S.ads = a.ads;
       toast("🗑 O'chirildi"); viewAds();
     } catch (er) { toast(er.message, true); }
+  };
+}
+
+async function viewPromos() {
+  const list = await api('/admin/promos');
+  const info = (c) => {
+    const val = c.type === 'fixed' ? money(c.value) : c.value + '%';
+    const lim = c.maxUses ? `${c.used}/${c.maxUses}` : `${c.used}/∞`;
+    const exp = c.expiresAt ? new Date(c.expiresAt).toLocaleDateString('ru-RU') : 'muddatsiz';
+    return `${val} chegirma · ishlatilgan: ${lim} · ${exp}${c.oncePerUser ? ' · 1 kishiga 1 marta' : ''}`;
+  };
+  const state = (c) => (c.expired ? '⌛ Muddati tugagan' : c.maxUses && c.used >= c.maxUses ? '🚫 Limit tugagan' : c.active ? '🟢 Faol' : '⏸ O\'chirilgan');
+  $('#pv').innerHTML = `<div class="form" style="padding:0">
+    <div class="fld"><label>Promo kod (qo'lda yozing)</label>
+      <div class="promo-row"><input id="p-c" maxlength="20" placeholder="MASALAN: YANGI10" autocapitalize="characters" autocomplete="off">
+      <button class="btn light sm" id="p-g" type="button">🎲 Tasodifiy</button></div></div>
+    <div class="row2">
+      <div class="fld"><label>Turi</label><select id="p-t"><option value="percent">Foiz (%)</option><option value="fixed">Summa (so'm)</option></select></div>
+      <div class="fld"><label id="p-vl">Foiz (1-100)</label><input id="p-v" type="number" inputmode="numeric" placeholder="10"></div>
+    </div>
+    <div class="row2">
+      <div class="fld"><label>Limit (0 = cheksiz)</label><input id="p-m" type="number" inputmode="numeric" value="0"></div>
+      <div class="fld"><label>Muddati (ixtiyoriy)</label><input id="p-e" type="date"></div>
+    </div>
+    <div class="fld"><label>Foydalanish</label><select id="p-o"><option value="1">Har kim 1 marta</option><option value="0">Cheklovsiz (limit ichida)</option></select></div>
+    <button class="btn" id="p-s">🎟 Promo kod qo'shish</button></div>
+    <h2 class="sec">🎟 Promo kodlar (${list.length})</h2>
+    <div class="list" id="pl">${
+      list.length
+        ? list.map((c) => `<div class="li"><div class="in"><b>${esc(c.code)}</b><small>${esc(info(c))}</small><small>${state(c)}</small></div>
+          <button class="x" data-t="${c.id}" title="Yoqish/o'chirish">${c.active ? '⏸' : '▶️'}</button><button class="x" data-d="${c.id}">🗑</button></div>`).join('')
+        : `<div class="empty"><b>🎟</b>Promo kod yo'q</div>`
+    }</div>`;
+
+  const typ = $('#p-t');
+  typ.onchange = () => {
+    $('#p-vl').textContent = typ.value === 'fixed' ? "Summa (so'm)" : 'Foiz (1-100)';
+    $('#p-v').placeholder = typ.value === 'fixed' ? '20000' : '10';
+  };
+  const pc = $('#p-c');
+  pc.addEventListener('input', () => { pc.value = pc.value.toUpperCase().replace(/[^A-Z0-9_-]/g, ''); });
+  $('#p-g').onclick = () => {
+    const ch = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    pc.value = Array.from({ length: 8 }, () => ch[Math.floor(Math.random() * ch.length)]).join('');
+  };
+  $('#p-s').onclick = async () => {
+    const body = {
+      code: pc.value.trim(),
+      type: typ.value,
+      value: $('#p-v').value,
+      maxUses: $('#p-m').value || 0,
+      expires: $('#p-e').value,
+      oncePerUser: $('#p-o').value === '1',
+    };
+    if (body.code.length < 3) return toast('Promo kodni kiriting (kamida 3 belgi)', true);
+    if (!body.value || Number(body.value) < 1) return toast('Chegirma qiymatini kiriting', true);
+    const b = $('#p-s');
+    b.disabled = true;
+    try { await api('/admin/promos', { method: 'POST', body }); toast('✅ Promo kod qo\'shildi'); viewPromos(); }
+    catch (e) { b.disabled = false; toast(e.message, true); }
+  };
+  $('#pl').onclick = async (e) => {
+    const t = e.target.closest('[data-t]');
+    if (t) {
+      try { await api('/admin/promos/' + t.dataset.t + '/toggle', { method: 'POST' }); viewPromos(); }
+      catch (er) { toast(er.message, true); }
+      return;
+    }
+    const b = e.target.closest('[data-d]');
+    if (!b || !(await ask("Promo kodni o'chirasizmi?"))) return;
+    try { await api('/admin/promos/' + b.dataset.d, { method: 'DELETE' }); toast("🗑 O'chirildi"); viewPromos(); }
+    catch (er) { toast(er.message, true); }
   };
 }
 
