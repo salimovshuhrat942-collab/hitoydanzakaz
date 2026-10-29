@@ -2,6 +2,7 @@ const { Telegraf, Markup } = require('telegraf');
 const mongoose = require('mongoose');
 const { BOT_TOKEN, ADMIN_ID, BASE_URL, REGIONS } = require('./config');
 const { User, Product, Order, Image, Seller, toBuf } = require('./models');
+const promoSvc = require('./promo');
 
 const bot = new Telegraf(BOT_TOKEN);
 const state = { id: 0, username: '' };
@@ -52,13 +53,15 @@ async function touchUser(from) {
 
 // ---------- buyurtma xabari ----------
 function orderText(o) {
-  const total = (o.price || 0) * (o.qty || 1);
+  const total = (o.price || 0) * (o.qty || 1) - (o.discount || 0);
   const buyer = o.buyerUsername ? `@${esc(o.buyerUsername)}` : `ID ${o.buyer}`;
   return [
     `🆕 <b>Yangi buyurtma #${shortId(o._id)}</b>`,
     '',
     `📦 <b>${esc(o.productTitle)}</b>`,
-    `💰 ${money(o.price)} × ${o.qty} = <b>${money(total)}</b>`,
+    `💰 ${money(o.price)} × ${o.qty}`,
+    o.discount ? `🎟 Promo ${esc(o.promo)}: −${money(o.discount)}` : null,
+    `💵 Jami: <b>${money(total)}</b>`,
     '',
     `👤 Ism: ${esc(o.name)}`,
     `📞 Telefon: ${esc(o.phone)}`,
@@ -126,8 +129,18 @@ async function notifySeller(order) {
 }
 
 // Web App va Bot uchun umumiy buyurtma yaratish
-async function createOrder({ product, buyer, name, phone, region, district, qty, note, receipt, source }) {
-  const order = await Order.create({
+async function createOrder({ product, buyer, name, phone, region, district, qty, note, receipt, source, promo }) {
+  // Promo kod (bo'lsa) — chegirmani server o'zi hisoblaydi
+  let promoCode = '';
+  let discount = 0;
+  if (promo) {
+    const r = await promoSvc.redeem(promo, buyer.id, product.price * qty);
+    promoCode = r.code;
+    discount = r.discount;
+  }
+  let order;
+  try {
+    order = await Order.create({
     product: product._id,
     productTitle: product.title,
     productImage: product.image,
@@ -142,17 +155,23 @@ async function createOrder({ product, buyer, name, phone, region, district, qty,
     region,
     district,
     note: note || '',
+    promo: promoCode,
+    discount,
     receipt: receipt || undefined,
     source,
   });
+  } catch (e) {
+    if (promoCode) await promoSvc.release(promoCode, buyer.id);
+    throw e;
+  }
   await Product.updateOne({ _id: product._id }, { $inc: { orders: 1 } });
 
   notifySeller(order).catch(() => {});
   bot.telegram
     .sendMessage(
       buyer.id,
-      `✅ <b>Buyurtmangiz qabul qilindi!</b>\n\n📦 ${esc(product.title)}\n🔢 Soni: ${qty}\n💰 Jami: ${money(
-        product.price * qty
+      `✅ <b>Buyurtmangiz qabul qilindi!</b>\n\n📦 ${esc(product.title)}\n🔢 Soni: ${qty}\n${discount ? `🎟 Promo ${esc(promoCode)}: −${money(discount)}\n` : ''}💰 Jami: ${money(
+        product.price * qty - discount
       )}\n\n${receipt ? "To'lov chekingiz sotuvchiga yuborildi. " : ''}Sotuvchi tez orada siz bilan bog'lanadi. Buyurtma raqami: #${shortId(order._id)}`,
       { parse_mode: 'HTML' }
     )
@@ -228,12 +247,26 @@ function askQty(ctx) {
   );
 }
 
+// Soni tanlangach — promo kod so'raymiz
+function askPromo(ctx, flow) {
+  flow.step = 'promo';
+  return ctx.reply(
+    '🎟 <b>Promo kodingiz bormi?</b>\n\nKodni yozing yoki o\'tkazib yuboring.',
+    {
+      parse_mode: 'HTML',
+      ...Markup.inlineKeyboard([[Markup.button.callback('⏭ Promo kod yo\'q', 'promo:skip')]]),
+    }
+  );
+}
+
+const flowTotal = (p, d) => p.price * d.qty - (d.discount || 0);
+
 async function afterQty(ctx, flow) {
   const p = await Product.findById(flow.productId).lean();
   const seller = p ? await Seller.findOne({ tgId: p.seller }).lean() : null;
   if (seller && seller.cardNumber) {
     flow.step = 'receipt';
-    const total = p.price * flow.data.qty;
+    const total = flowTotal(p, flow.data);
     return ctx.reply(
       `💳 <b>To'lov</b>\n\nJami: <b>${money(total)}</b>\n\nKarta raqami:\n<code>${fmtCard(seller.cardNumber)}</code>\n` +
         `Karta egasi: <b>${esc(seller.cardHolder || '')}</b>\n\n` +
@@ -253,7 +286,8 @@ async function showConfirm(ctx, flow) {
     '',
     `📦 ${esc(p.title)}`,
     `🔢 Soni: ${d.qty}`,
-    `💰 Jami: <b>${money(p.price * d.qty)}</b>`,
+    d.discount ? `🎟 Promo ${esc(d.promo)}: −${money(d.discount)}` : null,
+    `💰 Jami: <b>${money(flowTotal(p, d))}</b>`,
     '',
     `👤 ${esc(d.name)}`,
     `📞 ${esc(d.phone)}`,
@@ -365,6 +399,21 @@ bot.on('text', async (ctx) => {
       const n = parseInt(t, 10);
       if (!n || n < 1 || n > 99) return ctx.reply('1 dan 99 gacha raqam yozing.');
       f.data.qty = n;
+      return askPromo(ctx, f);
+    }
+    case 'promo': {
+      const p = await Product.findById(f.productId).lean();
+      try {
+        const r = await promoSvc.check(t, ctx.from.id, p.price * f.data.qty);
+        f.data.promo = r.code;
+        f.data.discount = r.discount;
+      } catch (e) {
+        if (e instanceof promoSvc.PromoError) {
+          return ctx.reply('❌ ' + e.message + '\n\nBoshqa kod yozing yoki "Promo kod yo\'q" tugmasini bosing.');
+        }
+        throw e;
+      }
+      await ctx.reply(`✅ Promo qabul qilindi! Chegirma: <b>${money(f.data.discount)}</b>`, { parse_mode: 'HTML' });
       return afterQty(ctx, f);
     }
     case 'receipt':
@@ -392,6 +441,14 @@ bot.action(/^qty:(\d+)$/, async (ctx) => {
   if (!f || f.step !== 'qty') return;
   f.data.qty = Number(ctx.match[1]);
   await ctx.editMessageReplyMarkup(undefined).catch(() => {});
+  return askPromo(ctx, f);
+});
+
+bot.action('promo:skip', async (ctx) => {
+  const f = flows.get(ctx.from.id);
+  await ctx.answerCbQuery();
+  if (!f || f.step !== 'promo') return;
+  await ctx.editMessageReplyMarkup(undefined).catch(() => {});
   return afterQty(ctx, f);
 });
 
@@ -412,16 +469,23 @@ bot.action('ok', async (ctx) => {
   flows.delete(ctx.from.id);
   await ctx.answerCbQuery('Yuborilmoqda...');
   await ctx.editMessageReplyMarkup(undefined).catch(() => {});
-  await createOrder({
-    product,
-    buyer: {
-      id: ctx.from.id,
-      name: [ctx.from.first_name, ctx.from.last_name].filter(Boolean).join(' '),
-      username: ctx.from.username || '',
-    },
-    ...f.data,
-    source: 'bot',
-  });
+  try {
+    await createOrder({
+      product,
+      buyer: {
+        id: ctx.from.id,
+        name: [ctx.from.first_name, ctx.from.last_name].filter(Boolean).join(' '),
+        username: ctx.from.username || '',
+      },
+      ...f.data,
+      source: 'bot',
+    });
+  } catch (e) {
+    if (e instanceof promoSvc.PromoError) {
+      return ctx.reply('❌ ' + e.message + '\n\nBuyurtmani promo kodsiz qaytadan boshlang.');
+    }
+    throw e;
+  }
 });
 
 // Sotuvchi buyurtma holatini o'zgartiradi
