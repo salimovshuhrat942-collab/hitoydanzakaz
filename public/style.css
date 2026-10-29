@@ -400,3 +400,12 @@ h2.sec { margin: 18px 2px 10px; font-size: 18px; font-weight: 800; }
 .paybox .pb-h { font-size: 13px; opacity: .9; margin-bottom: 10px; text-transform: uppercase; }
 .paybox .btn.light { background: rgba(255, 255, 255, .95); }
 .paybox .pb-s { margin-top: 10px; font-size: 12.5px; opacity: .92; }
+
+/* ---------- Promo kod ---------- */
+.promo-row { display: flex; gap: 8px; align-items: stretch; }
+.promo-row input { flex: 1; min-width: 0; text-transform: uppercase; letter-spacing: .5px; }
+.promo-row .btn { flex: 0 0 auto; white-space: nowrap; }
+.promo-msg { min-height: 0; margin: 6px 2px 0; font-size: 12.5px; font-weight: 700; }
+.promo-msg.ok { color: var(--ok); }
+.promo-msg.bad { color: var(--bad); }
+.total b.ds { color: var(--ok); font-size: 16px; }
